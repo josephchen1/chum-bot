@@ -8,6 +8,6 @@ I'm Spot Bot, the relentless accountant of the surreptitious photos you take of 
 
 Features
 - Look out for :white_check_mark:. If you don't see :white_check_mark:, your spot didn't count!
-- Spot Bot will only count edits you make to messages within one minute of posting them.
+- If you didn't spot something correctly, you can edit your message within one minute of sending it to correct the error. 
 - If you delete a message, the spot will no longer count! 
 - Spotbot will treat each channel of the workspace separately so different teams can maintain their own spot boards. 

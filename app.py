@@ -15,9 +15,9 @@ from flask_pymongo import PyMongo
 SPOT_WORDS = ["spot", "spotted", "spotting", "codespot", "codespotted", "codespotting"]
 OAUTH_EXPIRATION_SECONDS = 600
 EDIT_GRACE_PERIOD_SECONDS = 60
-REFERENDUM_WINDOW_SECONDS = 60 # change to 86400
-REFERENDUM_EXPIRATION_SECONDS = 20 # change to 86400
-REFERENDUM_CHECK_SECONDS = 10 # Change to 600
+REFERENDUM_WINDOW_SECONDS = 86400 # change to 86400
+REFERENDUM_EXPIRATION_SECONDS = 86400 # change to 86400
+REFERENDUM_CHECK_SECONDS = 600 # Change to 600
 BASE = "/spotbot"
 
 SPOT_PATTERN = comp(r"(\b" + r"\b)|(\b".join(SPOT_WORDS) + r"\b)")
@@ -101,7 +101,7 @@ def log_spot(channel, user, ts, text, files, say, client):
     if spotter in found_spotted:
         found_spotted.remove(spotter)
 
-    bot_user = get_bot_user()
+    bot_user = get_bot_user(client)
     if bot_user in found_spotted:
         found_spotted.remove(bot_user)
     
