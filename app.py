@@ -172,7 +172,7 @@ def changed_listener(event, body, say, client):
 
     # If spots have been counted, they must be deleted and recounted.
     try:
-        delete(inner_event["ts"])
+        delete(message_id(inner_event["ts"]))
         client.reactions_remove(channel=event["channel"], name=APPROVED_EMOJI, timestamp=inner_event["ts"])
     except Exception:
         pass
