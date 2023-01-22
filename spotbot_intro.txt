@@ -7,7 +7,8 @@ I'm Spot Bot, the relentless accountant of the surreptitious photos you take of 
 - `referendum`: Reply `referendum` to a spot to start a 24-hour vote to determine if the spot will count or not. 
 - `reset`: To reset the spot record in a channel. 
 
-Features
+
+Tips
 - Look out for :white_check_mark:. If you don't see :white_check_mark:, your spot didn't count!
 - If you didn't spot something correctly, you can edit your message within one minute of sending it to correct the error. 
 - If you delete a message, the spot will no longer count! 

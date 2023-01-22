@@ -205,7 +205,7 @@ def scoreboard_listener(event, say, body, client):
     if not spots:
         return 
     spots = spots[SPOT]
-    scoreboard = sorted(spots.keys(), key=lambda p: p[1], reverse=True)[:n]
+    scoreboard = sorted(spots.keys(), key=lambda p: spots[p], reverse=True)[:n]
     message = "Spotboard:\n" 
     for i, participant in enumerate(scoreboard):
         message += f"{i + 1}. {get_display_name(client, participant)} - {spots[participant]}\n" 
@@ -223,7 +223,7 @@ def caughtboard_listener(event, say, body, client):
     if not caught:
         return 
     caught = caught[CAUGHT]
-    caughtboard = sorted(caught.keys(), key=lambda p: p[1], reverse=True)[:n]
+    caughtboard = sorted(caught.keys(), key=lambda p: caught[p], reverse=True)[:n]
     message = "Caughtboard:\n" 
     for i, participant in enumerate(caughtboard):
         message += f"{i + 1}. {get_display_name(client, participant)} - {caught[participant]}\n" 
@@ -285,9 +285,11 @@ def reset_listener(event, say, body, client):
     manager = spot_data.get_manager()
     if event["user"] != manager: 
         say("Only the person who invited Spot Bot to the channel can perform that action. ")
+        return 
 
     if not re.search("reset yes i mean it really delete everything", event["text"], re.IGNORECASE):
         say("If you really want to delete every spot in this channel, please send \"reset yes i mean it really delete everything\". This action cannot be undone.")
+        return
     
     say("Resetting the spot record. ")
     spot_data.drop_loc()
