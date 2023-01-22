@@ -1,189 +1,318 @@
-import re
-import os
+import re, os
+from utils import *
 
-from flask import Flask, request, make_response
+from flask import Flask, request
 
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
-from slack_sdk.signature import SignatureVerifier
-from slack_sdk.webhook import WebhookClient
-
-from slack_bolt import App, Say
+from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
+from slack_bolt.oauth.oauth_settings import OAuthSettings
 
-from utils import read_db, write_db, read_prev, write_prev, DATABASES, DB_NAME 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from flask_pymongo import PyMongo
+
+SPOT_WORDS = ["spot", "spotted", "spotting", "codespot", "codespotted", "codespotting"]
+OAUTH_EXPIRATION_SECONDS = 600
+EDIT_GRACE_PERIOD_SECONDS = 60
+REFERENDUM_WINDOW_SECONDS = 60 # change to 86400
+REFERENDUM_EXPIRATION_SECONDS = 20 # change to 86400
+REFERENDUM_CHECK_SECONDS = 10 # Change to 600
+BASE = "/spotbot"
+
+SPOT_PATTERN = comp(r"(\b" + r"\b)|(\b".join(SPOT_WORDS) + r"\b)")
+USER_PATTERN = re.compile(r"<@[a-zA-Z0-9]+>")
+
+APPROVED_EMOJI = "white_check_mark"
+DENIED_EMOJI = "x"
 
 load_dotenv()
 
-app = Flask(__name__)
-
-db_client = MongoClient(f'mongodb+srv://{os.environ.get("DB_USER")}:{os.environ.get("PASSWORD")}@cluster0.xzki5.mongodb.net/codespotting?retryWrites=true&w=majority')
-
-token = os.environ.get("CLIENT_TOKEN")
-client = WebClient(token=token)
-SPOT_WORDS = ["spot", "spotted", "spotting", "codespot", "codespotted", "codespotting"]
-USER_PATTERN = r"<@[a-zA-Z0-9]+>"
+app = Flask("app")
+app.config["MONGO_URI"] = os.environ.get("SPOTBOT_SECURE_LINK")
+mongo = PyMongo(app)
+db_client = mongo.cx
+spot_data = SpotDatabase(db_client)
+referendum_data = ReferendumDatabase(db_client, REFERENDUM_EXPIRATION_SECONDS)
 
 # https://slack.dev/bolt-python/concepts#authenticating-oauth
+oauth_settings = OAuthSettings(
+    client_id=os.environ.get("SPOTBOT_CLIENT_ID"),
+    client_secret=os.environ.get("SPOTBOT_CLIENT_SECRET"),
+    scopes=[
+        "channels:history",
+        "chat:write",
+        "files:read",
+        "groups:history",
+        "reactions:write",
+        "reactions:read",
+        "mpim:read",
+        "im:history",
+        "users.profile:read"
+    ],
+    installation_store=DatabaseInstallationStore(db_client),
+    state_store=DatabaseOAuthStateStore(db_client, expiration_seconds=OAUTH_EXPIRATION_SECONDS),
+    install_path=f"{BASE}/install/",
+    redirect_uri_path=f"{BASE}/oauth_redirect/"
+)
 
-bolt_app = App(token=token, signing_secret=os.environ.get("SIGNING_SECRET"))
+bolt_app = App(
+    signing_secret=os.environ.get("SPOTBOT_SIGNING_SECRET"), 
+    oauth_settings=oauth_settings
+)
 
 handler = SlackRequestHandler(bolt_app)
 
-@app.route("/slack/events", methods=["POST"])
+@app.route(f"{BASE}/install/")
+def handle_install():
+    return handler.handle(request)
+
+@app.route(f"{BASE}/oauth_redirect/", methods=["GET"])
+def handle_oauth():
+    return handler.handle(request)
+
+@app.route(f"{BASE}/events/", methods=["POST"])
 def handle_events():
     return handler.handle(request)
 
+@bolt_app.event("member_joined_channel")
+def joined_listener(event, say, client):
+    print("USER JOINED")
+    if event["user"] != get_bot_user(client):
+        return 
+    with open("spotbot_intro.txt") as file:
+        say(file.read())
+
+@bolt_app.message(SPOT_PATTERN)
+def spot_listener(event, body, say, client):
+    if "files" not in event:
+        return
+    spot_data.configure_for_message(event, body)
+    log_spot(event["channel"], event["user"], event["ts"], event["text"], event["files"], say, client)
+    spot_data.push_write()
+
+def log_spot(channel, user, ts, text, files, say, client):
+    spotter = user
+    found_spotted = USER_PATTERN.findall(text)
+    found_spotted = list(set(found_spotted)) # remove duplicates
+    found_spotted = [username[2:-1] for username in found_spotted]
+    # # Disallow spotting yourself
+    # if spotter in found_spotted:
+    #     found_spotted.remove(spotter)
+
+    # # disallow spotting the spotbot
+    # bot_user = get_bot_user()
+    # if bot_user in found_spotted:
+    #     found_spotted.remove(bot_user)
+    
+    if not found_spotted:
+        return 
+
+    all_images = [image['url_private'] for image in files]
+
+    spot_data.increment_spot(spotter, len(found_spotted))
+    for spotted in found_spotted:
+        spot_data.increment_caught(spotted, 1)
+        spot_data.append_images(spotted, all_images)
+
+
+    spot_data.add_message(message_id(ts), {
+        "spotter": spotter,
+        "spotted": found_spotted,
+        "images": all_images,
+        "ts": ts,
+        "referendum": False
+    })
+
+    recent = spot_data.get_recent()
+    if len(recent) >= 2 and spotter == recent[-1] and spotter == recent[-2]:
+        say(f"<@{spotter}> is on fire 🥵")
+        spot_data.set(RECENT, [])
+    elif len(recent) >= 3:
+        for _ in range(len(recent) - 2):
+            spot_data.pop(RECENT, True)
+    spot_data.append(RECENT, spotter)
+
+    client.reactions_add(channel=channel, name=APPROVED_EMOJI, timestamp=ts)
+
 @bolt_app.event({
     "type": "message",
-    "subtype": "file_share"
+    "subtype": "message_deleted"
 })
-def log_spot(event, say):
-    caught, spot, images = read_db(db_client)
-    if any([w in event.get('text', '').lower() for w in SPOT_WORDS]):
-        spotter = event['user']
-        found_spotted = re.findall(USER_PATTERN, event['text'])
-        if not found_spotted:
-            return
-        for spotted in found_spotted:
-            caught[spotted] = caught.get(spotted, 0) + 1
-            for image in event['files']:
-                images[spotted] = images.get(spotted, []) + [image['url_private']]
-            spot[spotter] = spot.get(spotter, 0) + 1
-        prev = read_prev(db_client, spotter)
-        if spotter == prev[0]:
-            prev[1] += 1
-            if prev[1] >= 3:
-                say(f"<@{spotter}> is on fire 🥵")
-        else:
-            prev[0] = spotter
-            prev[1] = 1
-        write_prev(db_client, prev)
-        write_db(db_client, caught, spot, images)
-        response = client.reactions_add(channel=event['channel'], name="white_check_mark", timestamp=event['ts'])
+def delete_listener(event, body):
+    spot_data.configure_for_message(event, body)
+    delete(message_id(event["deleted_ts"]))
+    spot_data.push_write()
 
-def scoreboard(event, say, prefix="", db_name=DB_NAME):
-    caught, spot, images = read_db(db_client, db_name)
+def delete(mid):
+    message = spot_data.delete_message(mid)
+    if not message:
+        return
+    spot_data.increment_spot(message["spotter"], -1 * len(message["spotted"]))
+    for user in message["spotted"]:
+        spot_data.increment_caught(user, -1)
+        spot_data.update_value(f"{IMAGES}.{user}", "$pull", message["images"])
+
+@bolt_app.event({
+    "type": "message",
+    "subtype": "message_changed"
+})
+def changed_listener(event, body, say, client):
+    spot_data.configure_for_message(event, body)
+    inner_event = event["message"]
+
+    if "files" not in inner_event:
+        return
+
+    if not SPOT_PATTERN.search(inner_event["text"]):
+        return
+
+    if float(event["ts"]) - float(inner_event["ts"]) > EDIT_GRACE_PERIOD_SECONDS:
+        # Only accept edits made soon after they are posted
+        return 
+
+    # If spots have been counted, they must be deleted and recounted.
+    mid = message_id(inner_event["ts"])
+    result = spot_data.get({f"{MESSAGES}.{mid}": True})
+    if result and MESSAGES in result and mid in result[MESSAGES]:
+        delete(inner_event["ts"])
+
+    log_spot(event["channel"], inner_event["user"], inner_event["ts"], 
+        inner_event["text"], inner_event["files"], say, client)
+
+    spot_data.push_write()
+
+@bolt_app.message(comp("scoreboard|spotboard"))
+def scoreboard_listener(event, say, body, client):
     try:
         words = event['text'].lower().split()
-        n = int(words[words.index(prefix + "spotboard") + 1])
+        n = int(words[words.index("spotboard") + 1])
     except:
         try:
-            n = int(words[words.index(prefix + "scoreboard") + 1])
+            n = int(words[words.index("scoreboard") + 1])
         except:
             n = 5
-    scoreboard = sorted(spot.items(), key=lambda p: p[1], reverse=True)[:n]
-    message = prefix + "Spotboard:\n" 
-    for i in range(len(scoreboard)):
-        curr = scoreboard[i]
-        message += f"{i + 1}. {get_display_name(curr[0])} - {curr[1]}\n" 
+
+    spot_data.configure_for_message(event, body)
+    spots = spot_data.get({SPOT: True})
+    if not spots:
+        return 
+    spots = spots[SPOT]
+    scoreboard = sorted(spots.keys(), key=lambda p: p[1], reverse=True)[:n]
+    message = "Spotboard:\n" 
+    for i, participant in enumerate(scoreboard):
+        message += f"{i + 1}. {get_display_name(client, participant)} - {spots[participant]}\n" 
     say(message)
 
-@bolt_app.message("fa21-scoreboard")
-@bolt_app.message("fa21-spotboard")
-@bolt_app.message("fa21-Scoreboard")
-@bolt_app.message("fa21-Spotboard")
-def fa21_scoreboard(event, say):
-    scoreboard(event, say, prefix="fa21-", db_name=DATABASES['fa21'])
-
-@bolt_app.message("sp22-scoreboard")
-@bolt_app.message("sp22-spotboard")
-@bolt_app.message("sp22-Scoreboard")
-@bolt_app.message("sp22-Spotboard")
-def sp22_scoreboard(event, say):
-    scoreboard(event, say, prefix="sp22-", db_name=DATABASES['sp22'])
-
-@bolt_app.message("fa22-scoreboard")
-@bolt_app.message("fa22-spotboard")
-@bolt_app.message("fa22-Scoreboard")
-@bolt_app.message("fa22-Spotboard")
-def fa22_scoreboard(event, say):
-    scoreboard(event, say, prefix="fa22-", db_name=DATABASES['fa22'])
-
-@bolt_app.message("scoreboard")
-@bolt_app.message("spotboard")
-@bolt_app.message("Scoreboard")
-@bolt_app.message("Spotboard")
-def curr_scoreboard(event, say):
-    scoreboard(event, say)
-
-def caughtboard(event, say, prefix="", db_name=DB_NAME):
-    caught, spot, images = read_db(db_client, db_name)
+@bolt_app.message(comp("caughtboard"))
+def caughtboard_listener(event, say, body, client):
     try:
         words = event['text'].lower().split()
-        n = int(words[words.index(prefix + "caughtboard") + 1])
+        n = int(words[words.index("caughtboard") + 1])
     except:
         n = 5
-    caughtboard = sorted(caught.items(), key=lambda p: p[1], reverse=True)[:n]
-    message = prefix + "Caughtboard:\n" 
-    for i in range(len(caughtboard)):
-        curr = caughtboard[i]
-        message += f"{i + 1}. {get_display_name(curr[0][2:-1])} - {curr[1]}\n"  
+    spot_data.configure_for_message(event, body)
+    caught = spot_data.get({CAUGHT: True})
+    if not caught:
+        return 
+    caught = caught[CAUGHT]
+    caughtboard = sorted(caught.keys(), key=lambda p: p[1], reverse=True)[:n]
+    message = "Caughtboard:\n" 
+    for i, participant in enumerate(caughtboard):
+        message += f"{i + 1}. {get_display_name(client, participant)} - {caught[participant]}\n" 
     say(message)
 
-@bolt_app.message("fa21-caughtboard")
-@bolt_app.message("fa21-Caughtboard")
-def fa21_caughtboard(event, say):
-    caughtboard(event, say, prefix="fa21-", db_name=DATABASES['fa21'])
-
-@bolt_app.message("sp22-caughtboard")
-@bolt_app.message("sp22-Caughtboard")
-def sp22_caughtboard(event, say):
-    caughtboard(event, say, prefix="sp22-", db_name=DATABASES['sp22'])
-
-@bolt_app.message("fa22-caughtboard")
-@bolt_app.message("fa22-Caughtboard")
-def fa22_caughtboard(event, say):
-    caughtboard(event, say, prefix="fa22-", db_name=DATABASES['fa22'])
-
-@bolt_app.message("caughtboard")
-@bolt_app.message("Caughtboard")
-def curr_caughtboard(event, say):
-    caughtboard(event, say)
-
-def pics(event, say, db_name=DB_NAME):
-    caught, spot, images = read_db(db_client, db_name)
-    found_spotted = re.search(USER_PATTERN, event['text'])
+@bolt_app.message(comp(r"\bpics\b|\bphotos\b"))
+def pics_listener(event, say, body, client):
+    found_spotted = USER_PATTERN.search(event['text'])
     if not found_spotted:
         return
-    spotted = found_spotted[0]
-    message = f"Spots of {get_display_name(spotted[2:-1])}:\n"
-    for link in images[spotted]:
-        message += f"• {link}\n"
-    blocks = [{
-        "type": "section",
-        "text": {
-            "type": "mrkdwn",
-            "text": message
-        }
-    }]
-    say(blocks=blocks, text=message)
+    spotted = found_spotted[0][2:-1]
 
-@bolt_app.message("fa21-pics")
-def fa21_pics(event, say):
-    pics(event, say, db_name=DATABASES['fa21'])
+    spot_data.configure_for_message(event, body)
+    images = spot_data.get({IMAGES: True})
+    if not images:
+        return 
+    images = images[IMAGES]
 
-@bolt_app.message("sp22-pics")
-def sp22_pics(event, say):
-    pics(event, say, db_name=DATABASES['sp22'])
+    message = f"Spots of {get_display_name(client, spotted)}:\n"
+    for i, link in enumerate(images[spotted]):
+        message += f"{i + 1}. {link}\n"
+    say(message)
 
-@bolt_app.message("fa22-pics")
-def fa22_pics(event, say):
-    pics(event, say, db_name=DATABASES['fa22'])
+@bolt_app.message(comp(r"\breferendum\b"))
+def referendum_listener(event, say, body, client):
+    if "thread_ts" not in event:
+        return
 
-# https://slack.dev/bolt-python/concepts
-@bolt_app.message("pics")
-def curr_pics(event, say):
-    pics(event, say)
+    print(event)
 
-def get_display_name(user):
-    try:
-        profile = bolt_app.client.users_profile_get(user=user)['profile']
-        return profile['display_name'] or profile['real_name']
-    except:
-        print("couldn't find: ", user)
+    if float(event["ts"]) - float(event["thread_ts"]) > REFERENDUM_WINDOW_SECONDS:
+        # Only accept referendums that open within a certain window
+        return 
 
-if __name__ == '__main__':
-    app.run(threaded=True, port=5000)
+    spot_data.configure_for_message(event, body)
+    mid = message_id(event["thread_ts"])
+    result = spot_data.set_referendum(mid, True)
+    if result is not False:
+        return 
+
+    referendum_post = say(
+        text = f"Good spot :+1: or bad spot :-1:? ", 
+        thread_ts = event['thread_ts'],
+        reply_broadcast = True
+    )
+    client.reactions_add(channel=referendum_post["channel"], name="+1", timestamp=referendum_post["ts"])
+    client.reactions_add(channel=referendum_post["channel"], name="-1", timestamp=referendum_post["ts"])
+
+    print(body)
+    referendum_data.store_referendum({
+        "spot_ts": event['thread_ts'], 
+        "vote_ts": referendum_post["ts"],
+        "channel_id": event["channel"],
+        "team_id": body["team_id"],
+        "loc_id": unique_location_identifier(event, body),
+        "date": datetime.utcnow()
+    })
+
+def process_referenda():
+    print("Processing referenda.")
+    for referendum in referendum_data.expired_referenda(): 
+        print("Referendum", referendum)
+        spot_data.configure_for_loc(referendum["loc_id"])
+        bot = bolt_app.installation_store.find_installation(team_id=referendum["team_id"], enterprise_id=None, user_id=None, is_enterprise_install=None)
+        result = bolt_app.client.reactions_get(token=bot.bot_token, channel=referendum["channel_id"], timestamp=referendum["vote_ts"])
+        print(result)
+        yes_votes = set()
+        no_votes = set()
+        for reaction in result["message"]["reactions"]:
+            names = reaction["name"].split("::")
+            if names[0] == "+1" or names[0] == "thumbsup":
+                ledger = yes_votes
+            elif names[0] == "-1" or names[0] == "thumbsdown":
+                ledger = no_votes
+            else: 
+                continue
+            for user in reaction["users"]:
+                ledger.add(user)
+
+        if len(yes_votes) >= len(no_votes): 
+            bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is good! ")
+            return 
+
+        delete(message_id(referendum["spot_ts"]))
+        bolt_app.client.reactions_remove(token=bot.bot_token, channel=referendum["channel_id"], name=APPROVED_EMOJI, timestamp=referendum["spot_ts"])
+        bolt_app.client.reactions_add(token=bot.bot_token, channel=referendum["channel_id"], name=DENIED_EMOJI, timestamp=referendum["spot_ts"])
+        bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is bad. ")
+        spot_data.push_write()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=process_referenda, trigger="interval", seconds=REFERENDUM_CHECK_SECONDS)
+scheduler.start()
+process_referenda()
+
+@bolt_app.event("file_shared")
+@bolt_app.event("message")
+def ignore(event):
+    print(event)
+    pass
