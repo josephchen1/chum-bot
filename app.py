@@ -44,11 +44,13 @@ oauth_settings = OAuthSettings(
         "chat:write",
         "files:read",
         "groups:history",
-        "reactions:write",
-        "reactions:read",
-        "mpim:read",
         "im:history",
-        "users.profile:read"
+        "mpim:read",
+        "reactions:write",
+        "users.profile:read",
+        "reactions:read",
+        "channels:read",
+        "groups:read"
     ],
     installation_store=DatabaseInstallationStore(db_client),
     state_store=DatabaseOAuthStateStore(db_client, expiration_seconds=OAUTH_EXPIRATION_SECONDS),
@@ -77,7 +79,6 @@ def handle_events():
 
 @bolt_app.event("member_joined_channel")
 def joined_listener(event, say, client):
-    print("USER JOINED")
     if event["user"] != get_bot_user(client):
         return 
     with open("spotbot_intro.txt") as file:
@@ -91,19 +92,18 @@ def spot_listener(event, body, say, client):
     log_spot(event["channel"], event["user"], event["ts"], event["text"], event["files"], say, client)
     spot_data.push_write()
 
+# Assumes matches SPOT_PATTERN and files are present. 
 def log_spot(channel, user, ts, text, files, say, client):
     spotter = user
     found_spotted = USER_PATTERN.findall(text)
     found_spotted = list(set(found_spotted)) # remove duplicates
     found_spotted = [username[2:-1] for username in found_spotted]
-    # # Disallow spotting yourself
-    # if spotter in found_spotted:
-    #     found_spotted.remove(spotter)
+    if spotter in found_spotted:
+        found_spotted.remove(spotter)
 
-    # # disallow spotting the spotbot
-    # bot_user = get_bot_user()
-    # if bot_user in found_spotted:
-    #     found_spotted.remove(bot_user)
+    bot_user = get_bot_user()
+    if bot_user in found_spotted:
+        found_spotted.remove(bot_user)
     
     if not found_spotted:
         return 
@@ -114,7 +114,6 @@ def log_spot(channel, user, ts, text, files, say, client):
     for spotted in found_spotted:
         spot_data.increment_caught(spotted, 1)
         spot_data.append_images(spotted, all_images)
-
 
     spot_data.add_message(message_id(ts), {
         "spotter": spotter,
@@ -172,10 +171,11 @@ def changed_listener(event, body, say, client):
         return 
 
     # If spots have been counted, they must be deleted and recounted.
-    mid = message_id(inner_event["ts"])
-    result = spot_data.get({f"{MESSAGES}.{mid}": True})
-    if result and MESSAGES in result and mid in result[MESSAGES]:
+    try:
         delete(inner_event["ts"])
+        client.reactions_remove(channel=event["channel"], name=APPROVED_EMOJI, timestamp=inner_event["ts"])
+    except Exception:
+        pass
 
     log_spot(event["channel"], inner_event["user"], inner_event["ts"], 
         inner_event["text"], inner_event["files"], say, client)
@@ -245,8 +245,6 @@ def referendum_listener(event, say, body, client):
     if "thread_ts" not in event:
         return
 
-    print(event)
-
     if float(event["ts"]) - float(event["thread_ts"]) > REFERENDUM_WINDOW_SECONDS:
         # Only accept referendums that open within a certain window
         return 
@@ -265,7 +263,6 @@ def referendum_listener(event, say, body, client):
     client.reactions_add(channel=referendum_post["channel"], name="+1", timestamp=referendum_post["ts"])
     client.reactions_add(channel=referendum_post["channel"], name="-1", timestamp=referendum_post["ts"])
 
-    print(body)
     referendum_data.store_referendum({
         "spot_ts": event['thread_ts'], 
         "vote_ts": referendum_post["ts"],
@@ -276,13 +273,10 @@ def referendum_listener(event, say, body, client):
     })
 
 def process_referenda():
-    print("Processing referenda.")
     for referendum in referendum_data.expired_referenda(): 
-        print("Referendum", referendum)
         spot_data.configure_for_loc(referendum["loc_id"])
         bot = bolt_app.installation_store.find_installation(team_id=referendum["team_id"], enterprise_id=None, user_id=None, is_enterprise_install=None)
         result = bolt_app.client.reactions_get(token=bot.bot_token, channel=referendum["channel_id"], timestamp=referendum["vote_ts"])
-        print(result)
         yes_votes = set()
         no_votes = set()
         for reaction in result["message"]["reactions"]:
@@ -314,5 +308,4 @@ process_referenda()
 @bolt_app.event("file_shared")
 @bolt_app.event("message")
 def ignore(event):
-    print(event)
     pass

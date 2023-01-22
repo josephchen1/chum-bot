@@ -4,9 +4,10 @@ I'm Spot Bot, the relentless accountant of the surreptitious photos you take of 
 - `spotboard`: Show how many times each channel member has spotted someone else. 
 - `caughtboard`: Show how many times each channel member has been spotted.
 - `pics`: View all pics of a person by tagging them in a message with the `pics` keyword. 
+- `referendum`: Reply `referendum` to a spot to start a 24-hour vote to determine if the spot will count or not. 
 
 Features
 - Look out for :white_check_mark:. If you don't see :white_check_mark:, your spot didn't count!
-- Spot Bot will only count edits you make to messages within one minute.
+- Spot Bot will only count edits you make to messages within one minute of posting them.
 - If you delete a message, the spot will no longer count! 
 - Spotbot will treat each channel of the workspace separately so different teams can maintain their own spot boards. 
