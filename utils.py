@@ -136,8 +136,7 @@ class SpotDatabase():
 
     def get_recent(self):
         result = self.get({RECENT: True, "_id": False})
-        print(result)
-        if not result:
+        if not result or RECENT not in result:
             return []
         return result[RECENT]
 
@@ -146,6 +145,14 @@ class SpotDatabase():
         if not result or MANAGER not in result: 
             return 
         return result[MANAGER]
+
+    def drop_loc(self, manager):
+        return self.collection.replace_one(
+            filter={"loc_id": self.loc_id},
+            replacement={
+                "loc_id": self.loc_id, 
+                MANAGER: manager
+            })
 
     def delete_message(self, message_id):
         result = self.collection.find_one_and_update(
@@ -173,9 +180,6 @@ class SpotDatabase():
             return None
 
         return result[MESSAGES][mid]["referendum"]
-
-    def drop_loc(self):
-        return self.collection.delete_one(filter={"loc_id": self.loc_id})
 
     #=================================
 
