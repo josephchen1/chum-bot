@@ -19,6 +19,7 @@ SPOT = "spot"
 RECENT = "recent"
 MESSAGES = "messages"
 IMAGES = "images"
+MANAGER = "manager"
 
 REFERENDUM_COLLECTION_NAME = "referenda"
 
@@ -140,6 +141,12 @@ class SpotDatabase():
             return []
         return result[RECENT]
 
+    def get_manager(self):
+        result = self.get({MANAGER: True})
+        if not result or MANAGER not in result: 
+            return 
+        return result[MANAGER]
+
     def delete_message(self, message_id):
         result = self.collection.find_one_and_update(
             filter={"loc_id": self.loc_id},
@@ -166,6 +173,9 @@ class SpotDatabase():
             return None
 
         return result[MESSAGES][mid]["referendum"]
+
+    def drop_loc(self):
+        return self.collection.delete_one(filter={"loc_id": self.loc_id})
 
     #=================================
 
@@ -204,6 +214,9 @@ class SpotDatabase():
 
     def add_message(self, message_id, message):
         self.set(f"{MESSAGES}.{message_id}", message)
+
+    def set_manager(self, user): 
+        self.set(f"{MANAGER}", user)
 
     def pop(self, path, from_front: bool):
         self.update_value(path, "$pop", -1 if from_front else 1)

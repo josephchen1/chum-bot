@@ -78,11 +78,18 @@ def handle_events():
     return handler.handle(request)
 
 @bolt_app.event("member_joined_channel")
-def joined_listener(event, say, client):
+def joined_listener(event, body, say, client):
     if event["user"] != get_bot_user(client):
         return 
     with open("spotbot_intro.txt") as file:
         say(file.read())
+
+    if "inviter" not in event:
+        return 
+
+    spot_data.configure_for_message(event, body)
+    spot_data.set_manager(event["inviter"])
+    spot_data.push_write()
 
 @bolt_app.message(SPOT_PATTERN)
 def spot_listener(event, body, say, client):
@@ -204,7 +211,7 @@ def scoreboard_listener(event, say, body, client):
         message += f"{i + 1}. {get_display_name(client, participant)} - {spots[participant]}\n" 
     say(message)
 
-@bolt_app.message(comp("caughtboard"))
+@bolt_app.message(comp(r"\bcaughtboard\b"))
 def caughtboard_listener(event, say, body, client):
     try:
         words = event['text'].lower().split()
@@ -271,6 +278,19 @@ def referendum_listener(event, say, body, client):
         "loc_id": unique_location_identifier(event, body),
         "date": datetime.utcnow()
     })
+
+@bolt_app.message(comp(r"\breset\b"))
+def reset_listener(event, say, body, client):
+    spot_data.configure_for_message(event, body)
+    manager = spot_data.get_manager()
+    if event["user"] != manager: 
+        say("Only the person who invited Spot Bot to the channel can perform that action. ")
+
+    if not re.search("reset yes i mean it really delete everything", event["text"], re.IGNORECASE):
+        say("If you really want to delete every spot in this channel, please send \"reset yes i mean it really delete everything\". This action cannot be undone.")
+    
+    say("Resetting the spot record. ")
+    spot_data.drop_loc()
 
 def process_referenda():
     for referendum in referendum_data.expired_referenda(): 
