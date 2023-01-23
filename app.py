@@ -100,7 +100,7 @@ def spot_listener(event, body, say, client):
     spot_data.push_write()
 
 # Assumes matches SPOT_PATTERN and files are present. 
-def log_spot(channel, user, ts, text, files, say, client):
+def log_spot(channel, user, ts, text, files, say, client, purged_recent=False):
     spotter = user
     found_spotted = USER_PATTERN.findall(text)
     found_spotted = list(set(found_spotted)) # remove duplicates
@@ -130,10 +130,13 @@ def log_spot(channel, user, ts, text, files, say, client):
         "referendum": False
     })
 
-    recent = spot_data.get_recent()
-    if recent == spotter: 
-        say(f"<@{spotter}> is on fire 🥵")
-        spot_data.set(RECENT, None)
+    if not purged_recent: 
+        recent = spot_data.get_recent()
+        if recent == spotter: 
+            say(f"<@{spotter}> is on fire 🥵")
+            spot_data.set(RECENT, None)
+        else: 
+            spot_data.set(RECENT, spotter)
     else: 
         spot_data.set(RECENT, spotter)
 
@@ -156,6 +159,8 @@ def delete(mid):
     for user in message["spotted"]:
         spot_data.increment_caught(user, -1)
         spot_data.update_value(f"{IMAGES}.{user}", "$pull", message["images"])
+
+    spot_data.set(RECENT, None)
 
 @bolt_app.event({
     "type": "message",
@@ -183,7 +188,7 @@ def changed_listener(event, body, say, client):
         print("Encountered an exception while internally deleting a changed spot: ", e)
 
     log_spot(event["channel"], inner_event["user"], inner_event["ts"], 
-        inner_event["text"], inner_event["files"], say, client)
+        inner_event["text"], inner_event["files"], say, client, purged_recent=True)
 
     spot_data.push_write()
 

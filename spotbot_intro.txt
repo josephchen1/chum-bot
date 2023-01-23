@@ -5,7 +5,7 @@ I'm Spot Bot, the relentless accountant of the surreptitious photos you take of 
 - `caughtboard`: Show how many times each channel member has been spotted.
 - `pics`: View all pics of a person by tagging them in a message with the `pics` keyword. 
 - `referendum`: Reply `referendum` to a spot to start a 24-hour vote to determine if the spot will count or not. 
-- `reset`: To reset the spot record in a channel. 
+- `reset`: Reset the spot record in a channel. 
 
 
 Tips
