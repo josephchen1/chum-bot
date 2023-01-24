@@ -300,33 +300,36 @@ def reset_listener(event, say, body, client):
 def process_referenda():
     for referendum in referendum_data.expired_referenda(): 
         try: 
-            spot_data.configure_for_loc(referendum["loc_id"])
-            bot = bolt_app.installation_store.find_installation(team_id=referendum["team_id"], enterprise_id=None, user_id=None, is_enterprise_install=None)
-            result = bolt_app.client.reactions_get(token=bot.bot_token, channel=referendum["channel_id"], timestamp=referendum["vote_ts"])
-            yes_votes = set()
-            no_votes = set()
-            for reaction in result["message"]["reactions"]:
-                names = reaction["name"].split("::")
-                if names[0] == "+1" or names[0] == "thumbsup":
-                    ledger = yes_votes
-                elif names[0] == "-1" or names[0] == "thumbsdown":
-                    ledger = no_votes
-                else: 
-                    continue
-                for user in reaction["users"]:
-                    ledger.add(user)
-
-            if len(yes_votes) >= len(no_votes): 
-                bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is good! ")
-                return 
-
-            delete(message_id(referendum["spot_ts"]))
-            bolt_app.client.reactions_remove(token=bot.bot_token, channel=referendum["channel_id"], name=APPROVED_EMOJI, timestamp=referendum["spot_ts"])
-            bolt_app.client.reactions_add(token=bot.bot_token, channel=referendum["channel_id"], name=DENIED_EMOJI, timestamp=referendum["spot_ts"])
-            bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is bad. ")
-            spot_data.push_write()
+            process_referendum(referendum)
         except Exception as e:
             print("Encountered an exception while processing expired referenda: ", e)
+
+def process_referendum(referendum):
+    bot = bolt_app.installation_store.find_installation(team_id=referendum["team_id"], enterprise_id=None, user_id=None, is_enterprise_install=None)
+    result = bolt_app.client.reactions_get(token=bot.bot_token, channel=referendum["channel_id"], timestamp=referendum["vote_ts"])
+    yes_votes = set()
+    no_votes = set()
+    for reaction in result["message"]["reactions"]:
+        names = reaction["name"].split("::")
+        if names[0] == "+1" or names[0] == "thumbsup":
+            ledger = yes_votes
+        elif names[0] == "-1" or names[0] == "thumbsdown":
+            ledger = no_votes
+        else: 
+            continue
+        for user in reaction["users"]:
+            ledger.add(user)
+
+    if len(yes_votes) >= len(no_votes): 
+        bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is good! ")
+        return 
+
+    spot_data.configure_for_loc(referendum["loc_id"])
+    delete(message_id(referendum["spot_ts"]))
+    spot_data.push_write()
+    bolt_app.client.reactions_remove(token=bot.bot_token, channel=referendum["channel_id"], name=APPROVED_EMOJI, timestamp=referendum["spot_ts"])
+    bolt_app.client.reactions_add(token=bot.bot_token, channel=referendum["channel_id"], name=DENIED_EMOJI, timestamp=referendum["spot_ts"])
+    bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is bad. ")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=process_referenda, trigger="interval", seconds=REFERENDUM_CHECK_SECONDS)
