@@ -270,9 +270,7 @@ def referendum_listener(event, say, body, client):
         thread_ts = event['thread_ts'],
         reply_broadcast = True
     )
-    client.reactions_add(channel=referendum_post["channel"], name="+1", timestamp=referendum_post["ts"])
-    client.reactions_add(channel=referendum_post["channel"], name="-1", timestamp=referendum_post["ts"])
-
+    
     referendum_data.store_referendum({
         "spot_ts": event['thread_ts'], 
         "vote_ts": referendum_post["ts"],
@@ -281,6 +279,9 @@ def referendum_listener(event, say, body, client):
         "loc_id": unique_location_identifier(event, body),
         "date": datetime.utcnow()
     })
+
+    client.reactions_add(channel=referendum_post["channel"], name="+1", timestamp=referendum_post["ts"])
+    client.reactions_add(channel=referendum_post["channel"], name="-1", timestamp=referendum_post["ts"])
 
 @bolt_app.message(comp(r"\breset\b"))
 def reset_listener(event, say, body, client):
