@@ -81,7 +81,7 @@ def handle_events():
 def joined_listener(event, body, say, client):
     if event["user"] != get_bot_user(client):
         return 
-    with open("spotbot_intro.txt") as file:
+    with open("chumbot_intro.txt") as file:
         say(file.read())
 
     if "inviter" not in event:
