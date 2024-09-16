@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask_pymongo import PyMongo
 
-SPOT_WORDS = ["spot", "spotted", "spotting", "codespot", "codespotted", "codespotting"]
+CHUM_WORDS = ["chum", "chummed", "chumming", "chums"]
 OAUTH_EXPIRATION_SECONDS = 600
 EDIT_GRACE_PERIOD_SECONDS = 60
 REFERENDUM_WINDOW_SECONDS = 86400 # change to 86400
@@ -20,7 +20,7 @@ REFERENDUM_EXPIRATION_SECONDS = 86400 # change to 86400
 REFERENDUM_CHECK_SECONDS = 600 # Change to 600
 BASE = "/spotbot"
 
-SPOT_PATTERN = comp(r"(\b" + r"\b)|(\b".join(SPOT_WORDS) + r"\b)")
+CHUM_PATTERN = comp(r"(\b" + r"\b)|(\b".join(CHUM_WORDS) + r"\b)")
 USER_PATTERN = re.compile(r"<@[a-zA-Z0-9]+>")
 
 APPROVED_EMOJI = "white_check_mark"
@@ -32,7 +32,7 @@ app = Flask("app")
 app.config["MONGO_URI"] = os.environ.get("SPOTBOT_SECURE_LINK")
 mongo = PyMongo(app)
 db_client = mongo.cx
-spot_data = SpotDatabase(db_client)
+chum_data = SpotDatabase(db_client)
 referendum_data = ReferendumDatabase(db_client, REFERENDUM_EXPIRATION_SECONDS)
 
 # https://slack.dev/bolt-python/concepts#authenticating-oauth
@@ -87,19 +87,19 @@ def joined_listener(event, body, say, client):
     if "inviter" not in event:
         return 
 
-    spot_data.configure_for_message(event, body)
-    spot_data.set_manager(event["inviter"])
-    spot_data.push_write()
+    chum_data.configure_for_message(event, body)
+    chum_data.set_manager(event["inviter"])
+    chum_data.push_write()
 
-@bolt_app.message(SPOT_PATTERN)
+@bolt_app.message(CHUM_PATTERN)
 def spot_listener(event, body, say, client):
     if "files" not in event:
         return
-    spot_data.configure_for_message(event, body)
+    chum_data.configure_for_message(event, body)
     log_spot(event["channel"], event["user"], event["ts"], event["text"], event["files"], say, client)
-    spot_data.push_write()
+    chum_data.push_write()
 
-# Assumes matches SPOT_PATTERN and files are present. 
+# Assumes matches CHUM_PATTERN and files are present. 
 def log_spot(channel, user, ts, text, files, say, client, purged_recent=False):
     spotter = user
     found_spotted = USER_PATTERN.findall(text)
@@ -117,12 +117,12 @@ def log_spot(channel, user, ts, text, files, say, client, purged_recent=False):
 
     all_images = [image['url_private'] for image in files]
 
-    spot_data.increment_spot(spotter, len(found_spotted))
+    chum_data.increment_spot(spotter, len(found_spotted))
     for spotted in found_spotted:
-        spot_data.increment_caught(spotted, 1)
-        spot_data.append_images(spotted, all_images)
+        chum_data.increment_caught(spotted, 1)
+        chum_data.append_images(spotted, all_images)
 
-    spot_data.add_message(message_id(ts), {
+    chum_data.add_message(message_id(ts), {
         "spotter": spotter,
         "spotted": found_spotted,
         "images": all_images,
@@ -131,14 +131,14 @@ def log_spot(channel, user, ts, text, files, say, client, purged_recent=False):
     })
 
     if not purged_recent: 
-        recent = spot_data.get_recent()
+        recent = chum_data.get_recent()
         if recent == spotter: 
             say(f"<@{spotter}> is on fire 🥵")
-            spot_data.set(RECENT, None)
+            chum_data.set(RECENT, None)
         else: 
-            spot_data.set(RECENT, spotter)
+            chum_data.set(RECENT, spotter)
     else: 
-        spot_data.set(RECENT, spotter)
+        chum_data.set(RECENT, spotter)
 
     client.reactions_add(channel=channel, name=APPROVED_EMOJI, timestamp=ts)
 
@@ -147,33 +147,33 @@ def log_spot(channel, user, ts, text, files, say, client, purged_recent=False):
     "subtype": "message_deleted"
 })
 def delete_listener(event, body):
-    spot_data.configure_for_message(event, body)
+    chum_data.configure_for_message(event, body)
     delete(message_id(event["deleted_ts"]))
-    spot_data.push_write()
+    chum_data.push_write()
 
 def delete(mid):
-    message = spot_data.delete_message(mid)
+    message = chum_data.delete_message(mid)
     if not message:
         return
-    spot_data.increment_spot(message["spotter"], -1 * len(message["spotted"]))
+    chum_data.increment_spot(message["spotter"], -1 * len(message["spotted"]))
     for user in message["spotted"]:
-        spot_data.increment_caught(user, -1)
-        spot_data.update_value(f"{IMAGES}.{user}", "$pull", message["images"])
+        chum_data.increment_caught(user, -1)
+        chum_data.update_value(f"{IMAGES}.{user}", "$pull", message["images"])
 
-    spot_data.set(RECENT, None)
+    chum_data.set(RECENT, None)
 
 @bolt_app.event({
     "type": "message",
     "subtype": "message_changed"
 })
 def changed_listener(event, body, say, client):
-    spot_data.configure_for_message(event, body)
+    chum_data.configure_for_message(event, body)
     inner_event = event["message"]
 
     if "files" not in inner_event:
         return
 
-    if not SPOT_PATTERN.search(inner_event["text"]):
+    if not CHUM_PATTERN.search(inner_event["text"]):
         return
 
     if float(event["ts"]) - float(inner_event["ts"]) > EDIT_GRACE_PERIOD_SECONDS:
@@ -190,46 +190,28 @@ def changed_listener(event, body, say, client):
     log_spot(event["channel"], inner_event["user"], inner_event["ts"], 
         inner_event["text"], inner_event["files"], say, client, purged_recent=True)
 
-    spot_data.push_write()
+    chum_data.push_write()
 
-@bolt_app.message(comp("scoreboard|spotboard"))
+@bolt_app.message(comp("scoreboard|chumboard"))
 def scoreboard_listener(event, say, body, client):
     try:
         words = event['text'].lower().split()
-        n = int(words[words.index("spotboard") + 1])
+        n = int(words[words.index("chumboard") + 1])
     except:
         try:
             n = int(words[words.index("scoreboard") + 1])
         except:
             n = 5
 
-    spot_data.configure_for_message(event, body)
-    spots = spot_data.get({SPOT: True})
+    chum_data.configure_for_message(event, body)
+    spots = chum_data.get({SPOT: True})
     if not spots:
         return 
     spots = spots[SPOT]
     scoreboard = sorted(spots.keys(), key=lambda p: spots[p], reverse=True)[:n]
-    message = "Spotboard:\n" 
+    message = "chumboard:\n" 
     for i, participant in enumerate(scoreboard):
         message += f"{i + 1}. {get_display_name(client, participant)} - {spots[participant]}\n" 
-    say(message)
-
-@bolt_app.message(comp(r"\bcaughtboard\b"))
-def caughtboard_listener(event, say, body, client):
-    try:
-        words = event['text'].lower().split()
-        n = int(words[words.index("caughtboard") + 1])
-    except:
-        n = 5
-    spot_data.configure_for_message(event, body)
-    caught = spot_data.get({CAUGHT: True})
-    if not caught:
-        return 
-    caught = caught[CAUGHT]
-    caughtboard = sorted(caught.keys(), key=lambda p: caught[p], reverse=True)[:n]
-    message = "Caughtboard:\n" 
-    for i, participant in enumerate(caughtboard):
-        message += f"{i + 1}. {get_display_name(client, participant)} - {caught[participant]}\n" 
     say(message)
 
 @bolt_app.message(comp(r"\bpics\b|\bphotos\b"))
@@ -239,8 +221,8 @@ def pics_listener(event, say, body, client):
         return
     spotted = found_spotted[0][2:-1]
 
-    spot_data.configure_for_message(event, body)
-    images = spot_data.get({IMAGES: True})
+    chum_data.configure_for_message(event, body)
+    images = chum_data.get({IMAGES: True})
     if not images:
         return 
     images = images[IMAGES]
@@ -259,14 +241,14 @@ def referendum_listener(event, say, body, client):
         # Only accept referendums that open within a certain window
         return 
 
-    spot_data.configure_for_message(event, body)
+    chum_data.configure_for_message(event, body)
     mid = message_id(event["thread_ts"])
-    result = spot_data.set_referendum(mid, True)
+    result = chum_data.set_referendum(mid, True)
     if result is not False:
         return 
 
     referendum_post = say(
-        text = f"Good spot :+1: or bad spot :-1:? ", 
+        text = f"Good chum :+1: or bad chum :-1:? ", 
         thread_ts = event['thread_ts'],
         reply_broadcast = True
     )
@@ -285,18 +267,18 @@ def referendum_listener(event, say, body, client):
 
 @bolt_app.message(comp(r"\breset\b"))
 def reset_listener(event, say, body, client):
-    spot_data.configure_for_message(event, body)
-    manager = spot_data.get_manager()
+    chum_data.configure_for_message(event, body)
+    manager = chum_data.get_manager()
     if event["user"] != manager: 
-        say("Only the person who invited Spot Bot to the channel can perform that action. ")
+        say("Only the person who invited Chum Bot to the channel can perform that action. ")
         return 
 
     if not re.search("reset yes i mean it really delete everything", event["text"], re.IGNORECASE):
-        say("If you really want to delete every spot in this channel, please send \"reset yes i mean it really delete everything\". This action cannot be undone.")
+        say("If you really want to delete every chum in this channel, please send \"reset yes i mean it really delete everything\". This action cannot be undone.")
         return
     
-    say("Resetting the spot record. ")
-    spot_data.drop_loc(manager)
+    say("Resetting the chum record. ")
+    chum_data.drop_loc(manager)
 
 def process_referenda():
     for referendum in referendum_data.expired_referenda(): 
@@ -322,15 +304,15 @@ def process_referendum(referendum):
             ledger.add(user)
 
     if len(yes_votes) >= len(no_votes): 
-        bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is good! ")
+        bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The chum is good! ")
         return 
 
-    spot_data.configure_for_loc(referendum["loc_id"])
+    chum_data.configure_for_loc(referendum["loc_id"])
     delete(message_id(referendum["spot_ts"]))
-    spot_data.push_write()
+    chum_data.push_write()
     bolt_app.client.reactions_remove(token=bot.bot_token, channel=referendum["channel_id"], name=APPROVED_EMOJI, timestamp=referendum["spot_ts"])
     bolt_app.client.reactions_add(token=bot.bot_token, channel=referendum["channel_id"], name=DENIED_EMOJI, timestamp=referendum["spot_ts"])
-    bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The spot is bad. ")
+    bolt_app.client.chat_postMessage(token=bot.bot_token, channel=referendum["channel_id"], thread_ts=referendum["spot_ts"], text="The chum is bad. ")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=process_referenda, trigger="interval", seconds=REFERENDUM_CHECK_SECONDS)
